@@ -189,6 +189,42 @@ def config_show() -> None:
     console.print()
 
 
+def _collect_more(prompt: str, collect_one) -> list:
+    """Repeatedly ask `prompt` (yes/no) and call collect_one() while yes.
+    Shared by every list-type manifest field so the add-loop logic exists
+    in exactly one place."""
+    entries = []
+    while inquirer.confirm(message=prompt, default=False).execute():
+        entries.append(collect_one())
+    return entries
+
+
+def _review_batch(label: str, entries: list, display, recollect) -> list:
+    """Show a collected batch back, stripped to readable display names,
+    and let the user remove an entry or redo the whole section before
+    moving on. Replaces per-item mid-loop editing -- jumping back to fix
+    entry #2 while entry #4 is mid-prompt got too fiddly once a project
+    had several reports of different types.
+    """
+    while entries:
+        console.print(f"\n[bold]{label} collected:[/bold]")
+        for i, e in enumerate(entries, 1):
+            console.print(f"  [{i}] {display(e)}")
+        action = inquirer.select(
+            message="Confirm this section:",
+            choices=["Looks good, continue", "Remove one", "Start this section over"],
+        ).execute()
+        if action == "Looks good, continue":
+            break
+        if action == "Start this section over":
+            entries = recollect()
+            continue
+        options = [f"[{i}] {display(e)}" for i, e in enumerate(entries, 1)]
+        chosen = inquirer.select(message="Remove which entry?", choices=options).execute()
+        entries.pop(options.index(chosen))
+    return entries
+
+
 @app.command()
 def init(project: str = typer.Argument(..., help="Project name, e.g. 'Semantic Web - guide allocation'")) -> None:
     """Step 1 -- interactive evidence inventory. Builds and saves manifest.json."""
@@ -196,60 +232,143 @@ def init(project: str = typer.Argument(..., help="Project name, e.g. 'Semantic W
     console.print(f"[bold]Inventory for:[/bold] {project}")
 
     root_dir = inquirer.filepath(
-        message="Codebase root folder:", only_directories=True, validate=DIR_VALIDATOR
+        message="Codebase root folder:", only_directories=True, validate=DIR_VALIDATOR, filter=clean_path
     ).execute()
-    src_dir = inquirer.filepath(
-        message="Source folder graphify should scan:",
-        # Default is root_dir itself, not a hardcoded "/src" guess --
-        # confirmed wrong against real project trees (Laravel's app/,
-        # the LMS backend's controllers/) that have no src/ folder at all.
-        default=root_dir,
-        only_directories=True,
-        validate=DIR_VALIDATOR,
-    ).execute()
-    # Single prompt for now -- wrapped into the list the schema now
-    # expects. The full multi-root collection loop (add another source
-    # root? -> yes/no, repeat) is a separate, larger UX piece, not built
-    # in this pass.
-    src_dirs = [src_dir]
+
+    console.print(
+        "[dim]Note: each source root below is scanned and graphed "
+        "independently -- e.g. a separate frontend/backend, or app/ vs "
+        "routes/ -- giving each codebase its own clearer knowledge graph "
+        "rather than one blended one.[/dim]"
+    )
+
+    def _collect_src_dirs() -> list:
+        first = inquirer.filepath(
+            message="Source folder graphify should scan:",
+            # Default is root_dir itself, not a hardcoded "/src" guess --
+            # confirmed wrong against real project trees (Laravel's app/,
+            # the LMS backend's controllers/) that have no src/ folder.
+            default=root_dir,
+            only_directories=True,
+            validate=DIR_VALIDATOR,
+            filter=clean_path,
+        ).execute()
+        rest = _collect_more(
+            "Add another source root?",
+            lambda: inquirer.filepath(
+                message="Additional source folder:", only_directories=True, validate=DIR_VALIDATOR, filter=clean_path
+            ).execute(),
+        )
+        return [first] + rest
+
+    src_dirs = _collect_src_dirs()
+    src_dirs = _review_batch("Source roots", src_dirs, display=lambda p: p, recollect=_collect_src_dirs)
 
     readme_path = None
     if inquirer.confirm(message="Do you have a README?", default=False).execute():
-        readme_path = inquirer.filepath(message="README path:", validate=FILE_VALIDATOR).execute()
+        readme_path = inquirer.filepath(message="README path:", validate=FILE_VALIDATOR, filter=clean_path).execute()
 
-    reports = []
-    while inquirer.confirm(message="Add a report?", default=False).execute():
+    def _collect_one_report() -> dict:
         rtype = inquirer.select(message="Report type:", choices=REPORT_TYPES).execute()
         rpath = inquirer.filepath(
-            message=f"Path to {rtype} (pdf/docx only):", validate=FILE_VALIDATOR
+            message=f"Path to {rtype} (pdf/docx only):", validate=FILE_VALIDATOR, filter=clean_path
         ).execute()
-        reports.append({"type": rtype, "path": rpath})
+        return {"type": rtype, "path": rpath}
 
-    research = []
-    while inquirer.confirm(message="Add a research doc?", default=False).execute():
-        research.append(
-            inquirer.filepath(message="Path (pdf/docx only):", validate=FILE_VALIDATOR).execute()
+    def _collect_reports() -> list:
+        return _collect_more("Add a report?", _collect_one_report)
+
+    reports = _collect_reports()
+    reports = _review_batch(
+        "Reports", reports,
+        display=lambda r: f"{Path(r['path']).name}  ({r['type']})",
+        recollect=_collect_reports,
+    )
+
+    def _collect_research() -> list:
+        return _collect_more(
+            "Add a research doc?",
+            lambda: inquirer.filepath(message="Path (pdf/docx only):", validate=FILE_VALIDATOR, filter=clean_path).execute(),
         )
 
-    presentations = []
-    while inquirer.confirm(message="Add a presentation?", default=False).execute():
-        presentations.append(
-            inquirer.filepath(message="Path (pdf/pptx only):", validate=FILE_VALIDATOR).execute()
+    research = _collect_research()
+    research = _review_batch(
+        "Research docs", research, display=lambda p: Path(p).name, recollect=_collect_research
+    )
+
+    def _collect_presentations() -> list:
+        return _collect_more(
+            "Add a presentation?",
+            lambda: inquirer.filepath(message="Path (pdf/pptx only):", validate=FILE_VALIDATOR, filter=clean_path).execute(),
         )
 
-    notes = []
-    while inquirer.confirm(message="Add a notes/checkpoint file?", default=False).execute():
-        notes.append(
-            inquirer.filepath(
-                message="Path (md/txt/rst/adoc/org only):", validate=FILE_VALIDATOR
-            ).execute()
+    presentations = _collect_presentations()
+    presentations = _review_batch(
+        "Presentations", presentations, display=lambda p: Path(p).name, recollect=_collect_presentations
+    )
+
+    def _collect_notes() -> list:
+        return _collect_more(
+            "Add a notes/checkpoint file?",
+            lambda: inquirer.filepath(
+                message="Path (md/txt/rst/adoc/org only):", validate=FILE_VALIDATOR, filter=clean_path
+            ).execute(),
         )
+
+    notes = _collect_notes()
+    notes = _review_batch("Notes", notes, display=lambda p: Path(p).name, recollect=_collect_notes)
 
     arch_diagram_path = None
     if inquirer.confirm(message="Do you have an architecture diagram?", default=False).execute():
         arch_diagram_path = inquirer.filepath(
-            message="Path (pdf/svg/png/jpg/jpeg/webp):", validate=FILE_VALIDATOR
+            message="Path (pdf/svg/png/jpg/jpeg/webp):", validate=FILE_VALIDATOR, filter=clean_path
         ).execute()
+
+    # Final cross-category recap -- everything collected, in one place,
+    # with the option to jump back into any single section's collect+
+    # review loop again before saving. README/arch diagram are shown but
+    # not redoable here (they're one confirm + one path each -- re-running
+    # `knowpiler init` from scratch is not meaningfully more work for
+    # those two, unlike the list-type sections this was actually built for).
+    sections = {
+        "Source roots": {"entries": src_dirs, "recollect": _collect_src_dirs, "display": lambda p: p},
+        "Reports": {
+            "entries": reports, "recollect": _collect_reports,
+            "display": lambda r: f"{Path(r['path']).name}  ({r['type']})",
+        },
+        "Research docs": {"entries": research, "recollect": _collect_research, "display": lambda p: Path(p).name},
+        "Presentations": {
+            "entries": presentations, "recollect": _collect_presentations,
+            "display": lambda p: Path(p).name,
+        },
+        "Notes": {"entries": notes, "recollect": _collect_notes, "display": lambda p: Path(p).name},
+    }
+
+    while True:
+        console.print("\n[bold]Final recap -- everything collected for this project:[/bold]")
+        console.print(f"  README               : {'yes' if readme_path else 'no'}")
+        console.print(f"  Architecture diagram : {'yes' if arch_diagram_path else 'no'}")
+        for label, sec in sections.items():
+            console.print(f"  {label} ({len(sec['entries'])}):")
+            for e in sec["entries"]:
+                console.print(f"    - {sec['display'](e)}")
+
+        choice = inquirer.select(
+            message="Everything look right?",
+            choices=["Yes, save this project", *sections.keys()],
+        ).execute()
+        if choice == "Yes, save this project":
+            break
+        sec = sections[choice]
+        redone = sec["recollect"]()
+        redone = _review_batch(choice, redone, sec["display"], sec["recollect"])
+        sec["entries"] = redone
+
+    src_dirs = sections["Source roots"]["entries"]
+    reports = sections["Reports"]["entries"]
+    research = sections["Research docs"]["entries"]
+    presentations = sections["Presentations"]["entries"]
+    notes = sections["Notes"]["entries"]
 
     manifest = create_manifest(
         project=project,
