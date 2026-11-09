@@ -7,17 +7,13 @@ from __future__ import annotations
 
 import os
 import stat
+import tomllib
 from pathlib import Path
 from typing import Optional
 
 import dotenv
 import tomli_w
 from pydantic import BaseModel
-
-try:
-    import tomllib  # Python 3.11+
-except ModuleNotFoundError:  # Python 3.10
-    import tomli as tomllib  # type: ignore
 
 KNOWPILER_HOME = Path(os.environ.get("KNOWPILER_HOME", Path.home() / ".knowpiler"))
 CONFIG_PATH = KNOWPILER_HOME / "config.toml"
@@ -68,9 +64,11 @@ def load_config() -> Config:
 def save_config(cfg: Config) -> None:
     KNOWPILER_HOME.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_PATH, "wb") as f:
-        # TOML has no null type -- exclude unset Optional fields rather than
-        # writing them as None, which tomli_w can't serialize at all.
-        tomli_w.dump(cfg.model_dump(exclude_none=True), f)
+        # TOML has no null type, so unset Optional fields are excluded.
+        # exclude_defaults also keeps default-derived values (storage_root,
+        # knowledge_root) out of the file: writing them froze a stale default
+        # into config.toml for good once the default later changed (hit live).
+        tomli_w.dump(cfg.model_dump(exclude_none=True, exclude_defaults=True), f)
 
 
 def backend_ready(backend: str) -> bool:
