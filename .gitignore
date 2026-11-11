@@ -2,7 +2,8 @@ Artifacts/
 Layer_0/
 Layer_1/
 .DS_Store
-
+venv/
+.pytest_cache/
 .kp_venv/
 __pycache__/
 *.pyc
@@ -10,5 +11,4 @@ __pycache__/
 .env
 .venv/
 .venv*/
-memory_guide.md
 extras/
