@@ -675,40 +675,82 @@ inside the graphify slice).
 Python >=3.11; T1 test subjects = ASL sign-language (single-root) + LMS (multi-root).
 **Note:** Log 10/11 dates (2026-10-29) are left as written; this log uses today's date.
 
-## Log 13 — Restart under a single architect; review of an external "Chunk 0.1"; slices 0a + 0b (2026-11-02)
+## Log 13 — The Stall, the Reset, and What Is Real (2026-11-09)
 
-**Final rulings (user):** (1) `~/.knowpiler` (hidden, internal) + `~/knowpiler-projects`
-(visible, results), same layout on every OS, both env-overridable; no `platformdirs`. (2) Providers,
-models and gateways are 100% dynamic — no hardcoded model names (BYOK cloud, local servers, LiteLLM
-proxy, OpenRouter, anything litellm supports). (3) Nothing specific to the author's projects;
-test fixtures are synthetic. Added vision item: "self-improving learning paths" (gap analysis →
-plan) as a later projection. The user appointed one architect to own the plan end to end.
+**Purpose:** The shared memory a co-developer carries. Read this before trusting any earlier plan.
 
-**Automation stance (restated):** official APIs inside documented limits, human in the loop,
-prepare-and-stop. NO detection evasion (randomised delays to avoid bot flags): that conflicts
-with platform terms and with the locked rules.
+**Journey:**
+In Logs 1–7, the author — working with an AI assistant — built and live-tested the foundation
+(`core/` engine with zero UI imports, `cli/` prompts, `.env` vault, `doctor`). Log 8 locked the
+`normalize` design, and Log 9 shipped items 1–4 (`clean_path`, multi-root `src_dirs`, visible
+`~/knowpiler-projects`, batch-review `init`), verified by live runs. Then the author moved to a
+new Mac (`Python 3.14.7`) and momentum broke: a stale handoff, a lost scratch picker file, and
+multiple AIs (local model + chat models) each proposing a larger blueprint. Logs 10–12 shipped
+zero feature code — only audits, research, and plans.
 
-**External "Chunk 0.1" (pyproject + config rewrite) — NOT adopted as written:**
+**Why It Stalled (5 Root Causes):**
 
-1. Too many changes in one chunk (breaks one-change-per-slice).
-2. Added unused deps (`textual`, `rapidfuzz`) and lowered the `python-dotenv` bound for no reason.
-3. `config show` would print keyring-stored keys as "Missing" (commands.py only knows vault/system).
-4. `hydrate_env()` / `get_credential_status()` would query the OS keychain for ~12 variables on
-   every command (slow; macOS may prompt) → keyring must be lazy, active backend only.
-5. Base URLs (settings, not secrets) were put in keyring/vault → belong in `config.toml` (`api_base`).
-6. "Dynamic providers" claimed, yet `set-backend` still rejects anything outside a fixed list and a
-   hardcoded provider→env table remains. litellm 1.104.2 ships `validate_environment(model,
-api_key, api_base, api_version)` (exists; behaviour NOT yet tested) → candidate replacement.
-7. **ERRATUM to Log 12:** the "chmod race / create .env 0600 first" fix is WITHDRAWN. Tested:
-   python-dotenv's `set_key` already creates the file 0600 and keeps 0600 on rewrite, so there is
-   no permission window with python-dotenv >=1.2. (Lesson: test a reviewer's "real defect" claim
-   before adopting it — three reviewers, including this architect, repeated it untested.)
+1. _Plans grew faster than code:_ Each new AI opinion added scope instead of shipping one verified step.
+2. _The vibe-coding trap on the project itself:_ Approving "Option A/B" menus and multi-file code
+   drops without a line-by-line mental model.
+3. _Zero automated tests or CI:_ Nothing objective proved what was "done" vs. what was only planned.
+4. _Session discontinuity:_ Stale `handoff.md`, lost scratch files, and drift between docs and disk.
+5. _Echo-chamber reviewer claims:_ Three reviews in a row repeated a claim that `python-dotenv`'s
+   `set_key()` creates `.env` with `0644` permissions before `chmod 600` runs. A 5-line test proved
+   `dotenv.set_key()` (>=1.2) creates `.env` at `0600` from the start (Log 12 claim **withdrawn**).
 
-**Done:** 0a `pyproject.toml` — python>=3.11, `tomli` removed, `pathspec>=1.0`,
-`graphifyy>=0.9.95,<0.10` (0.9.95 verified to exist, Apache-2.0), dev extra `pytest`, pytest config
-(`pythonpath=src`). 0b `config.py` — stdlib `tomllib`; `save_config` uses `exclude_defaults=True`.
-`tests/test_config.py` (5 tests, passing). Deliberately NOT added yet: `textual`, `rapidfuzz`,
-`keyring`, `platformdirs`.
-**Next:** 0c `ignore.py` (utf-8, pruned `os.walk`, `"gitignore"`, `write_graphifyignore`, delete
-`treewalk`). Later named slices: provider layer (dynamic, `api_base`/`api_key_env` in config.toml),
-keyring (lazy, handles a "keyring" source in `config show`).
+**Reality Check — Code on Disk vs. Unverified AI Material:**
+
+- **Actually in code (verified by reads + live runs):**
+  - `core/` has zero UI imports; `cli/commands.py` collects plain values and calls `core/`.
+  - `doctor.py`: Mac Rosetta check, `markitdown`, `pygount`, venv-scoped `graphify`, optional `git`.
+  - `config.py`: `~/.knowpiler/.env` vault + `config set-backend`/`show` (`vault`/`system`/`missing`),
+    local `OPENAI_BASE_URL` routing, `--force` base-URL poisoning purge.
+  - `init` + `manifest.py` + `utils.py`: `clean_path()`, multi-root `src_dirs`, log entry models,
+    batch review + final recap, visible `~/knowpiler-projects/<slug>/manifest.json` (no `staging/`
+    subfolder).
+  - `convert.py` (`convert_local()` with per-file `ConversionResult` isolation) and `ignore.py`.
+  - Everything after `init` (`normalize`, `rewrite`, `assemble`, `review`, `store`, `run`) = stubs.
+- **Rejected permanently (never adopt):**
+  - Fabricated 30-repo benchmarks, "0.00 hallucination rate", "71.5x AST compression" as a general
+    guarantee (it was one 52-file vendor figure), and past-due ICSE 2027 schedules.
+  - False "already built" claims (`load_manifest()` and `<slug>/staging/` did not exist in code).
+  - `pymupdf4llm` (AGPL-3.0 conflicts with our MIT license), `md.convert()` (SSRF surface),
+    `platformdirs`, JobSpy, bot-evasion delays, and browser-session auto-apply bots.
+  - Unofficial sourcemap-leaked Claude Code internals, unverified `graphify` advisory IDs,
+    hardcoded model tables from chats, and mega-chunk rewrites that bundle unused dependencies.
+- **Deferred (valid ideas, but premature before `normalize` works):**
+  - `Docling`: heavy (PyTorch); keep `markitdown` as default and test `Docling` as an optional
+    extra only after a 3-PDF bake-off on real project PDFs.
+  - `Typst` + `pypdf` ATS text-layer verifier and Drafter/Reviewer workflow steps: revisit at T2
+    once T1 (`normalize` → `rewrite` → `review`) works end-to-end on one project.
+
+**Recovery Protocol & Locked Rulings:**
+
+- _Protocol:_ Explain concept → author predicts → ONE small slice + `pytest` test → live run on
+  Mac → commit. No multi-file drops; no new planning round before the current slice is committed.
+- _Rulings:_ `~/.knowpiler` hidden (config, secrets) + `~/knowpiler-projects` visible (results) on
+  every OS via `Path.home()`, both env-overridable · providers/models/gateways 100% dynamic (no
+  hardcoded model names; `api_base` lives in `config.toml`, not `.env`) · `keyring` arrives later
+  as a lazy, active-backend-only slice paired with `config show` · test fixtures are synthetic ·
+  official APIs and prepare-and-stop human gates only.
+
+**Shipped & Verified in Commit `94b8217` (`11 passed in 0.09s`):**
+
+- **Slice 0a (`pyproject.toml`):** `requires-python = ">=3.11"`, dropped `tomli`, pinned
+  `pathspec>=1.0` and `graphifyy>=0.9.95,<0.10` (resolved `0.9.103`), added `dev = ["pytest>=8.0"]`
+  and `[tool.pytest.ini_options]` (`pythonpath = ["src"]`, `testpaths = ["tests"]`).
+  - _Surprise & fix:_ `test_config.py` was initially placed in `src/knowpiler/core/` while `tests/`
+    did not exist yet, triggering `PytestConfigWarning`. Created repo-root `tests/` and moved tests
+    there (tests always live in `tests/`, never in `src/`).
+- **Slice 0b (`core/config.py` + `tests/test_config.py`):** Stdlib `tomllib`; `save_config()` uses
+  `exclude_defaults=True` so default paths are never frozen into `config.toml` (5 tests passing).
+- **Slice 0c (`core/ignore.py` + `tests/test_ignore.py`, deleted `core/treewalk.py`):** Explicit
+  `encoding="utf-8"`, upgraded `pathspec` to `"gitignore"`, added `.knowpiler/` to safety net,
+  pruned `os.walk(topdown=True, followlinks=False)` in-place (`dirnames[:]`) with symlink-loop
+  protection, added `write_graphifyignore()`, merged `render_tree()`, and deleted `treewalk.py`
+  (6 tests passing, including symlink-loop and in-place pruning proofs).
+
+**Format from Log 14 onward:** `Date · Slice · Changed · Evidence · Surprise · Decision · Next`.
+**Next:** `0d` `manifest.py` → `0e` `convert.py` → `0f` `llm.py` → `0g` CI → `0h` `commands.py` →
+event protocol → Textual Shell v0 → `normalize`.
