@@ -820,21 +820,40 @@ event protocol → Textual Shell v0 → `normalize`.
 
 - **Next:** Step 2: `core/discover.py` (suggest) and `core/status.py` (readiness, hash drift, the warnings above), with tests, one file at a time.
 
-## Log 15 — Collection Step 2: Deterministic Discovery & Read-Only Status (2026-11-12)
+## Log 15 — Collection Step 2 + Step 3a: discover, status, active_project, direct commands (2026-11-12)
 
-- **Date:** 2026-11-12
-- **Slice:** Collection Step 2 (`core/discover.py` + `tests/test_discover.py`, `core/status.py` + `tests/test_status.py`)
-- **Evidence:** `36 passed in 0.22s` (`pytest -q`).
+- **Slice:** Collection Step 2 (`core/discover.py`, `core/status.py` + tests), `Config.active_project`, and `cli/commands.py` part 1 (direct commands) with `tests/test_cli_collection.py`.
+- **Evidence:** `44 passed in 0.22s` (`pytest -q`): 39 core tests plus 5 CLI tests. **Not yet covered:** `doctor`, `config show` and `config set-backend` after the `commands.py` edits (no test touches them), and no manual smoke test has been reported.
 - **Changed:**
-  - `discover.py` (`suggest_from_folder`): Pruned depth-3 walk using plain-data `CODE_MARKERS` (`Makefile` excluded to avoid false positives on `docs/`). Stops descending into a candidate once matched (enforcing disjoint inputs `C13` at suggestion time). Separate document pass surfaces `.pdf`/`.docx`/`.pptx` unchecked (`STATIC_SAFETY_NET` ignores `*.pdf`).
-  - Pre-check rules (`S1`, `S2`): Single candidate is pre-checked automatically; multiple candidates pre-check only on whole-token slug match against project name (after stripping stop-tokens like `project`, `main`, digits) up to `WORKSPACE_THRESHOLD = 6`. Separate caps (`DEFAULT_CAP = 20`) for candidates and documents; unified symlink counting in Pass 2.
-  - `status.py` (`get_status`): Pure read returning `StatusReport(n_inputs, n_evidence, findings)` and `ready_for_normalize` (`n_inputs > 0` and no `input_missing`). Checks `no_inputs`, `input_missing`, `no_readme`, `evidence_missing`, `evidence_changed` (fast `stat().st_size` check first, then streamed `sha256` if size matches — no `mtime` schema field needed), `scope_stranded`, `unknown_role`, and `unsupported_for_normalize`.
+  - `discover.py` — `suggest_from_folder(folder, project_name)`: pruned depth-3 walk over a plain-data `CODE_MARKERS` table (`Makefile` excluded so `docs/` isn't a code root). It stops descending into a candidate, which enforces disjoint inputs (C13) at suggestion time. A separate document pass surfaces `.pdf/.docx/.pptx` unchecked, because `STATIC_SAFETY_NET` ignores `*.pdf`. READMEs are suggested only at a candidate's root. Inputs carry `kind_hint`, evidence carries `role`.
+  - Pre-check rules — a lone candidate is always pre-checked. With several candidates, only those sharing a whole token with the project name are pre-checked (stop-tokens like `project`, `main`, `app` and bare digits are ignored, so `calms-app` never matches `lms`), capped at `WORKSPACE_THRESHOLD = 6`. More than 6 unmatched gives the "workspace with many codebases" note and no pre-check. More than one name match adds a "review pre-selected items" note. Candidates and documents are capped separately (`DEFAULT_CAP = 20`) with an overflow count, and all symlinks are counted in pass 2.
+  - `status.py` — `get_status(manifest)` is a pure read returning `StatusReport(n_inputs, n_evidence, findings)` plus `ready_for_normalize` (inputs > 0 and no `input_missing`). Findings: `no_inputs`, `input_missing`, `no_readme`, `unknown_role`, `unsupported_for_normalize`, `evidence_missing`, `evidence_changed`, `evidence_unreadable`, `scope_dangling` (warn), `scope_outside_input` (info). Drift check is size first (free `stat`), then a streamed sha256; the hash is the authority. No `mtime` field and no schema change.
+  - Scope findings were split. The first `scope_stranded` check warned on valid data, so it became `scope_dangling` (the scope id no longer exists, a real problem) and `scope_outside_input` (the file lives outside its scoped input, "fine if intentional").
+  - `Config.active_project` (C11) — read by interfaces only, with `-p` as override; core never reads it.
+  - `commands.py` part 1 — removed the old yes/no `init`, its helpers, `REPORT_TYPES`, and the `create_manifest` import. Added minimal `init` (name only, confirm-gated overwrite, `--force`, sets the active project), `add input` (`--kind`, `--label`, `--replace`), `add evidence` (`--role` required, `--scope` repeatable, `--subtype`, `--save-as-other`), `remove` (`--with-evidence`), and `status`. A shared `-p/--project` option resolves to the active project. Each command is a thin layer over core `Result`/`Problem`; this layer owns printing and exit codes. `config show` now prints the active project.
+  - `tests/test_cli_collection.py` — 5 tests: init sets the active project and `status` needs no flag; no project gives exit 1; overwrite is confirm-gated; add input/evidence with auto-scope and guarded remove (`--with-evidence`); wrong type fails, then `--save-as-other` stores role `other`.
 - **Surprise:**
-  1. In `test_discover.py`, `filtered_files` on the parent repo returned `4` (including the nested `packages/subpkg/package.json`) even though candidate discovery stopped descending—confirming `file_count` counts the whole candidate tree while keeping candidate roots disjoint.
-  2. `scope_stranded` checks `p.resolve().is_relative_to(inp.path)`. If a user explicitly scopes an external file (e.g. from `~/Downloads`) or shares one file across two disjoint inputs (`scope=["in-1", "in-2"]`), `status` will emit a `scope_stranded` warning because a single path cannot sit inside two disjoint folders simultaneously.
-- **Known Limits:**
-  - `file_count` runs `filtered_files` once per candidate (up to 20 walks).
-  - Document discovery runs a second depth-3 walk across the dropped folder.
-  - Folders without markers (e.g. bare script or hardware folders) are not suggested automatically; the Step 3 wizard must always offer a manual "Add folder" option.
-  - `CONVERTIBLE_EXTENSIONS` in `status.py` is a stand-in until `convert.py` / `normalize` owns the single list.
-- **Next:** Collection Step 3 (`active_project` in `core/config.py` + guided `init` wizard and `add`/`remove`/`status` commands in `cli/commands.py`).
+  1. `file_count` counts the whole candidate tree even though discovery stops descending, so a nested `package.json` is counted but never suggested.
+  2. A shared doc scoped to two disjoint inputs, or an external file with an explicit scope, can never sit inside every scoped folder. The original `scope_stranded` warned on valid data.
+  3. Until the CLI tests existed, removing `create_manifest` broke the entire CLI (including `doctor`) while every test stayed green, because nothing imported `commands.py`.
+  4. A config test was added without its code change, and the first fix made it worse: pasting a second `class Config` left two definitions in `config.py`, and the later one silently replaced the earlier one, so `active_project` never reached `model_fields`. Found by printing `Config.model_fields`.
+  5. Leftover lines from the old `init` ("Manifest saved", "Next: knowpiler normalize") survived the delete range and printed on every `status` call.
+  6. Chat-pasted replies mis-stated test counts repeatedly. Trust pytest output only.
+- **Decisions:**
+  - Suggestions never write to the manifest; only an explicit accept does.
+  - The hash decides drift, and size is only a shortcut.
+  - Direct commands and the guided wizard are both thin interfaces over the same core calls (C4, C8).
+  - Pre-check is a hint from observation (a name match or a lone candidate), never a classification.
+  - `add evidence` takes an explicit `--role`; there is no silent default role at the CLI.
+- **Known limits:**
+  - `file_count` runs `filtered_files` once per candidate (up to 20 walks) and the document pass walks the dropped folder a second time. Measure on the LMS folders before the wizard calls them.
+  - Folders without markers (bare scripts, hardware, CAD) are never suggested. The wizard must always offer a manual "add a folder" path.
+  - `CONVERTIBLE_EXTENSIONS` in `status.py` is a stand-in until `convert.py`/`normalize` owns the single list.
+  - `add evidence` cannot force `scope=[]` (whole project) for a file inside an input, because auto-scope wins.
+  - `_next_id` reuses the highest removed id. Replacing an input can leave scoped evidence outside it (now an info finding). A file re-added under a different role is a silent no-op. Role strings outside `ROLES` pass silently and `status` reports them.
+  - `status` re-hashes every evidence file on every call, so the wizard should call it once at "Save & finish".
+  - `normalize` must exclude the staging dir if it lands inside an input, and must say it writes `.graphifyignore` into the user's repo.
+  - The CLI tests assert short substrings and exit codes only, so Rich wrapping can't break them; the printed wording itself is not tested.
+- **Next:**
+  1. Manual smoke test of `doctor`, `config show`, `init`, `status` (not yet reported).
+  2. Step 3b-2: the guided wizard on top of the direct commands — folder drop, `suggest_from_folder`, container-split prompt (C14), a `ROLES`-driven action menu (C10), retry / save-as-other / skip recovery (C12), always a manual "add folder" path, and an in-memory draft saved once (C9).
