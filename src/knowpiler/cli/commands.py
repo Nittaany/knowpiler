@@ -10,23 +10,23 @@ values from an HTTP request body and call the exact same core functions.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated, List, Optional
 
 import typer
 from InquirerPy import inquirer
 from prompt_toolkit.document import Document
 from prompt_toolkit.validation import ValidationError, Validator
 from rich.console import Console
+from rich.markup import escape
 
 from knowpiler.core import config as cfg
+from knowpiler.core import manifest as mf
 from knowpiler.core.doctor import print_report, run_all
-from knowpiler.core.manifest import create_manifest
+from knowpiler.core.status import get_status
 from knowpiler.core.utils import clean_path
 
 app = typer.Typer(help="knowpiler -- knowledge compiler for engineers.")
 console = Console()
-
-REPORT_TYPES = ["final_report", "architecture_report", "functional_report", "research_report", "synopsis", "other"]
-
 
 class CleanPathValidator(Validator):
     """Validates a path after normalizing it via clean_path() first.
@@ -66,7 +66,7 @@ def main_callback() -> None:
 
 @app.command()
 def doctor() -> None:
-    """Check environment: markitdown, graphify, cloc, git, architecture."""
+    """Check environment: markitdown, pygount, graphify, git, architecture."""
     console.print("[bold]knowpiler doctor[/bold]")
     ok = print_report(run_all())
     if not ok:
@@ -161,6 +161,7 @@ def config_show() -> None:
     console.print("\n[bold]⚙️  Current Configuration (config.toml)[/bold]")
     console.print(f"  Active Backend : [cyan]{c.backend or 'Not set'}[/cyan]")
     console.print(f"  Active Model   : [cyan]{c.model or 'Default'}[/cyan]")
+    console.print(f"  Active Project : [cyan]{c.active_project or 'Not set'}[/cyan]")
 
     console.print("\n[bold]🔒 Credential Status[/bold]")
 
@@ -189,202 +190,151 @@ def config_show() -> None:
     console.print()
 
 
-def _collect_more(prompt: str, collect_one) -> list:
-    """Repeatedly ask `prompt` (yes/no) and call collect_one() while yes.
-    Shared by every list-type manifest field so the add-loop logic exists
-    in exactly one place."""
-    entries = []
-    while inquirer.confirm(message=prompt, default=False).execute():
-        entries.append(collect_one())
-    return entries
+# ---------------------------------------------------------------------------
+# Collection commands (C4, C8, C11). Interfaces resolve "active project";
+# core always receives an explicit manifest. Core returns Result/Problem and
+# this layer is the only place that prints or exits.
+# ---------------------------------------------------------------------------
+ProjectOption = Annotated[
+    Optional[str],
+    typer.Option("--project", "-p", help="Project to act on (default: the active project)."),
+]
+
+FIX_HINTS = {
+    "save_as_other": "add --save-as-other to keep it under role 'other'",
+    "remove_with_evidence": "add --with-evidence to remove it together with that evidence",
+}
 
 
-def _review_batch(label: str, entries: list, display, recollect) -> list:
-    """Show a collected batch back, stripped to readable display names,
-    and let the user remove an entry or redo the whole section before
-    moving on. Replaces per-item mid-loop editing -- jumping back to fix
-    entry #2 while entry #4 is mid-prompt got too fiddly once a project
-    had several reports of different types.
-    """
-    while entries:
-        console.print(f"\n[bold]{label} collected:[/bold]")
-        for i, e in enumerate(entries, 1):
-            console.print(f"  [{i}] {display(e)}")
-        action = inquirer.select(
-            message="Confirm this section:",
-            choices=["Looks good, continue", "Remove one", "Start this section over"],
-        ).execute()
-        if action == "Looks good, continue":
-            break
-        if action == "Start this section over":
-            entries = recollect()
-            continue
-        options = [f"[{i}] {display(e)}" for i, e in enumerate(entries, 1)]
-        chosen = inquirer.select(message="Remove which entry?", choices=options).execute()
-        entries.pop(options.index(chosen))
-    return entries
+def _load(project: Optional[str]) -> mf.Manifest:
+    c = cfg.load_config()
+    name = project or c.active_project
+    if not name:
+        console.print("[red]No project selected.[/red] Run `knowpiler init <name>` or pass -p <name>.")
+        raise typer.Exit(code=1)
+    try:
+        return mf.load_manifest(name, c.storage_root)
+    except mf.ManifestError as e:
+        console.print(f"[red]{escape(str(e))}[/red]")
+        raise typer.Exit(code=1)
+
+
+def _describe(entry) -> str:
+    if hasattr(entry, "label"):  # InputEntry
+        return f"{entry.id} {entry.label} ({entry.path})"
+    return f"{entry.id} {Path(entry.path).name} [{entry.role}]"  # EvidenceEntry
+
+
+def _print_problems(res: mf.Result) -> None:
+    for p in res.problems:
+        console.print(f"[red]✗[/red] {escape(p.message)}")
+        if "replace_existing" in p.suggested_fixes and p.conflicting_id:
+            console.print(f"[dim]  → to swap it in, add: --replace {p.conflicting_id}[/dim]")
+    for fix in res.suggested_fixes:
+        if fix in FIX_HINTS:
+            console.print(f"[dim]  → {FIX_HINTS[fix]}[/dim]")
+
+
+def _finish(manifest: mf.Manifest, res: mf.Result) -> None:
+    if not res.ok:
+        _print_problems(res)
+        raise typer.Exit(code=1)
+    if res.status != "already_collected":
+        manifest.save()
+    console.print(f"[green]✓[/green] {res.status.replace('_', ' ')}: {escape(_describe(res.entry))}")
 
 
 @app.command()
-def init(project: str = typer.Argument(..., help="Project name, e.g. 'Semantic Web - guide allocation'")) -> None:
-    """Step 1 -- interactive evidence inventory. Builds and saves manifest.json."""
+def init(
+    name: str = typer.Argument(..., help="Project name, e.g. 'Semantic Web - guide allocation'"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing project's manifest without asking."),
+) -> None:
+    """Create an empty project and make it the active one."""
     c = cfg.load_config()
-    console.print(f"[bold]Inventory for:[/bold] {project}")
+    path = mf.manifest_path_for(name, c.storage_root)
+    if path.exists() and not force:
+        if not typer.confirm(f"A project already exists at {path.parent}. Overwrite its manifest?", default=False):
+            raise typer.Exit(code=1)
+    mf.init_manifest(name, c.storage_root, save=True)
+    c.active_project = name
+    cfg.save_config(c)
+    console.print(f"[green]✓[/green] Project created and set active: {escape(name)}")
+    console.print("[dim]Next: knowpiler add input <folder>   (then: knowpiler status)[/dim]")
 
-    root_dir = inquirer.filepath(
-        message="Codebase root folder:", only_directories=True, validate=DIR_VALIDATOR, filter=clean_path
-    ).execute()
 
+add_app = typer.Typer(help="Add an input folder or an evidence file to a project.")
+app.add_typer(add_app, name="add")
+
+
+@add_app.command("input")
+def add_input_cmd(
+    path: str = typer.Argument(..., help="A folder to analyze (usually one codebase)."),
+    kind: str = typer.Option("code", "--kind", help=f"Suggested: {', '.join(mf.SUGGESTED_KINDS)}"),
+    label: Optional[str] = typer.Option(None, "--label", help="Your own name for it, e.g. backend."),
+    replace: Optional[str] = typer.Option(None, "--replace", help="Id of an existing input this folder replaces."),
+    project: ProjectOption = None,
+) -> None:
+    """Add a folder as an input."""
+    manifest = _load(project)
+    _finish(manifest, mf.add_input(manifest, path, kind=kind, label=label, replace_id=replace))
+
+
+@add_app.command("evidence")
+def add_evidence_cmd(
+    path: str = typer.Argument(..., help="A file that supports or explains the work."),
+    role: str = typer.Option(..., "--role", "-r", help=f"One of: {', '.join(mf.ROLES)} (or your own label)."),
+    subtype: Optional[str] = typer.Option(None, "--subtype", help="e.g. architecture_report"),
+    scope: Optional[List[str]] = typer.Option(
+        None, "--scope", "-s", help="Input id this applies to (repeatable). Default: inferred from where the file lives."
+    ),
+    save_as_other: bool = typer.Option(
+        False, "--save-as-other", help="If the file type doesn't fit the role, keep it under role 'other'."
+    ),
+    project: ProjectOption = None,
+) -> None:
+    """Add a file as evidence."""
+    manifest = _load(project)
+    res = mf.add_evidence(manifest, path, role=role, scope=scope or None, subtype=subtype)
+    if not res.ok and save_as_other and any(p.code == "wrong_type" for p in res.problems):
+        res = mf.add_evidence(manifest, path, role="other", scope=scope or None, subtype=subtype)
+    _finish(manifest, res)
+
+
+@app.command()
+def remove(
+    entry_id: str = typer.Argument(..., help="An input or evidence id, e.g. in-1 or ev-2."),
+    with_evidence: bool = typer.Option(False, "--with-evidence", help="Also remove evidence scoped only to this input."),
+    project: ProjectOption = None,
+) -> None:
+    """Remove an input or an evidence entry."""
+    manifest = _load(project)
+    _finish(manifest, mf.remove_entry(manifest, entry_id, cascade=with_evidence))
+
+
+@app.command()
+def status(project: ProjectOption = None) -> None:
+    """Show what is collected, what is missing, and whether normalize can run."""
+    manifest = _load(project)
+    report = get_status(manifest)
     console.print(
-        "[dim]Note: each source root below is scanned and graphed "
-        "independently -- e.g. a separate frontend/backend, or app/ vs "
-        "routes/ -- giving each codebase its own clearer knowledge graph "
-        "rather than one blended one.[/dim]"
+        f"\n[bold]{escape(manifest.project)}[/bold]  ·  {report.n_inputs} input(s)  ·  {report.n_evidence} evidence file(s)"
     )
-
-    def _collect_src_dirs() -> list:
-        first = inquirer.filepath(
-            message="Source folder graphify should scan:",
-            # Default is root_dir itself, not a hardcoded "/src" guess --
-            # confirmed wrong against real project trees (Laravel's app/,
-            # the LMS backend's controllers/) that have no src/ folder.
-            default=root_dir,
-            only_directories=True,
-            validate=DIR_VALIDATOR,
-            filter=clean_path,
-        ).execute()
-        rest = _collect_more(
-            "Add another source root?",
-            lambda: inquirer.filepath(
-                message="Additional source folder:", only_directories=True, validate=DIR_VALIDATOR, filter=clean_path
-            ).execute(),
-        )
-        return [first] + rest
-
-    src_dirs = _collect_src_dirs()
-    src_dirs = _review_batch("Source roots", src_dirs, display=lambda p: p, recollect=_collect_src_dirs)
-
-    readme_path = None
-    if inquirer.confirm(message="Do you have a README?", default=False).execute():
-        readme_path = inquirer.filepath(message="README path:", validate=FILE_VALIDATOR, filter=clean_path).execute()
-
-    def _collect_one_report() -> dict:
-        rtype = inquirer.select(message="Report type:", choices=REPORT_TYPES).execute()
-        rpath = inquirer.filepath(
-            message=f"Path to {rtype} (pdf/docx only):", validate=FILE_VALIDATOR, filter=clean_path
-        ).execute()
-        return {"type": rtype, "path": rpath}
-
-    def _collect_reports() -> list:
-        return _collect_more("Add a report?", _collect_one_report)
-
-    reports = _collect_reports()
-    reports = _review_batch(
-        "Reports", reports,
-        display=lambda r: f"{Path(r['path']).name}  ({r['type']})",
-        recollect=_collect_reports,
-    )
-
-    def _collect_research() -> list:
-        return _collect_more(
-            "Add a research doc?",
-            lambda: inquirer.filepath(message="Path (pdf/docx only):", validate=FILE_VALIDATOR, filter=clean_path).execute(),
-        )
-
-    research = _collect_research()
-    research = _review_batch(
-        "Research docs", research, display=lambda p: Path(p).name, recollect=_collect_research
-    )
-
-    def _collect_presentations() -> list:
-        return _collect_more(
-            "Add a presentation?",
-            lambda: inquirer.filepath(message="Path (pdf/pptx only):", validate=FILE_VALIDATOR, filter=clean_path).execute(),
-        )
-
-    presentations = _collect_presentations()
-    presentations = _review_batch(
-        "Presentations", presentations, display=lambda p: Path(p).name, recollect=_collect_presentations
-    )
-
-    def _collect_notes() -> list:
-        return _collect_more(
-            "Add a notes/checkpoint file?",
-            lambda: inquirer.filepath(
-                message="Path (md/txt/rst/adoc/org only):", validate=FILE_VALIDATOR, filter=clean_path
-            ).execute(),
-        )
-
-    notes = _collect_notes()
-    notes = _review_batch("Notes", notes, display=lambda p: Path(p).name, recollect=_collect_notes)
-
-    arch_diagram_path = None
-    if inquirer.confirm(message="Do you have an architecture diagram?", default=False).execute():
-        arch_diagram_path = inquirer.filepath(
-            message="Path (pdf/svg/png/jpg/jpeg/webp):", validate=FILE_VALIDATOR, filter=clean_path
-        ).execute()
-
-    # Final cross-category recap -- everything collected, in one place,
-    # with the option to jump back into any single section's collect+
-    # review loop again before saving. README/arch diagram are shown but
-    # not redoable here (they're one confirm + one path each -- re-running
-    # `knowpiler init` from scratch is not meaningfully more work for
-    # those two, unlike the list-type sections this was actually built for).
-    sections = {
-        "Source roots": {"entries": src_dirs, "recollect": _collect_src_dirs, "display": lambda p: p},
-        "Reports": {
-            "entries": reports, "recollect": _collect_reports,
-            "display": lambda r: f"{Path(r['path']).name}  ({r['type']})",
-        },
-        "Research docs": {"entries": research, "recollect": _collect_research, "display": lambda p: Path(p).name},
-        "Presentations": {
-            "entries": presentations, "recollect": _collect_presentations,
-            "display": lambda p: Path(p).name,
-        },
-        "Notes": {"entries": notes, "recollect": _collect_notes, "display": lambda p: Path(p).name},
-    }
-
-    while True:
-        console.print("\n[bold]Final recap -- everything collected for this project:[/bold]")
-        console.print(f"  README               : {'yes' if readme_path else 'no'}")
-        console.print(f"  Architecture diagram : {'yes' if arch_diagram_path else 'no'}")
-        for label, sec in sections.items():
-            console.print(f"  {label} ({len(sec['entries'])}):")
-            for e in sec["entries"]:
-                console.print(f"    - {sec['display'](e)}")
-
-        choice = inquirer.select(
-            message="Everything look right?",
-            choices=["Yes, save this project", *sections.keys()],
-        ).execute()
-        if choice == "Yes, save this project":
-            break
-        sec = sections[choice]
-        redone = sec["recollect"]()
-        redone = _review_batch(choice, redone, sec["display"], sec["recollect"])
-        sec["entries"] = redone
-
-    src_dirs = sections["Source roots"]["entries"]
-    reports = sections["Reports"]["entries"]
-    research = sections["Research docs"]["entries"]
-    presentations = sections["Presentations"]["entries"]
-    notes = sections["Notes"]["entries"]
-
-    manifest = create_manifest(
-        project=project,
-        root_dir=root_dir,
-        src_dirs=src_dirs,
-        storage_root=c.storage_root,
-        readme_path=readme_path,
-        reports=reports,
-        research=research,
-        presentations=presentations,
-        notes=notes,
-        arch_diagram_path=arch_diagram_path,
-    )
-
-    console.print(f"[green]Manifest saved:[/green] {manifest.staging_dir}/manifest.json")
-    console.print(f"[dim]Next: knowpiler normalize {project}[/dim]")
+    for i in manifest.inputs:
+        console.print(f"  {i.id}  [cyan]{escape(i.label)}[/cyan] ({escape(i.kind)})  [dim]{escape(i.path)}[/dim]")
+    for e in manifest.evidence:
+        scope = ", ".join(e.scope) or "whole project"
+        console.print(f"  {e.id}  {escape(Path(e.path).name)} [dim]· {escape(e.role)} · scope: {scope}[/dim]")
+    if report.findings:
+        console.print()
+    for f in report.findings:
+        mark, color = ("!", "yellow") if f.level == "warn" else ("i", "dim")
+        console.print(f"  [{color}]{mark}[/{color}] {escape(f.message)}")
+    if report.ready_for_normalize:
+        console.print("\n[green]Ready for normalize.[/green]")
+    else:
+        console.print("\n[yellow]Not ready for normalize yet.[/yellow]")
+    if not manifest.inputs:
+            console.print("[dim]Next: knowpiler add input <folder>[/dim]")
 
 
 @app.command()

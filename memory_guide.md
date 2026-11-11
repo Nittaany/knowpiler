@@ -819,3 +819,22 @@ event protocol → Textual Shell v0 → `normalize`.
 - `commands.py` still imports the removed `create_manifest`, so the CLI is broken until Step 3.
 
 - **Next:** Step 2: `core/discover.py` (suggest) and `core/status.py` (readiness, hash drift, the warnings above), with tests, one file at a time.
+
+## Log 15 — Collection Step 2: Deterministic Discovery & Read-Only Status (2026-11-12)
+
+- **Date:** 2026-11-12
+- **Slice:** Collection Step 2 (`core/discover.py` + `tests/test_discover.py`, `core/status.py` + `tests/test_status.py`)
+- **Evidence:** `36 passed in 0.22s` (`pytest -q`).
+- **Changed:**
+  - `discover.py` (`suggest_from_folder`): Pruned depth-3 walk using plain-data `CODE_MARKERS` (`Makefile` excluded to avoid false positives on `docs/`). Stops descending into a candidate once matched (enforcing disjoint inputs `C13` at suggestion time). Separate document pass surfaces `.pdf`/`.docx`/`.pptx` unchecked (`STATIC_SAFETY_NET` ignores `*.pdf`).
+  - Pre-check rules (`S1`, `S2`): Single candidate is pre-checked automatically; multiple candidates pre-check only on whole-token slug match against project name (after stripping stop-tokens like `project`, `main`, digits) up to `WORKSPACE_THRESHOLD = 6`. Separate caps (`DEFAULT_CAP = 20`) for candidates and documents; unified symlink counting in Pass 2.
+  - `status.py` (`get_status`): Pure read returning `StatusReport(n_inputs, n_evidence, findings)` and `ready_for_normalize` (`n_inputs > 0` and no `input_missing`). Checks `no_inputs`, `input_missing`, `no_readme`, `evidence_missing`, `evidence_changed` (fast `stat().st_size` check first, then streamed `sha256` if size matches — no `mtime` schema field needed), `scope_stranded`, `unknown_role`, and `unsupported_for_normalize`.
+- **Surprise:**
+  1. In `test_discover.py`, `filtered_files` on the parent repo returned `4` (including the nested `packages/subpkg/package.json`) even though candidate discovery stopped descending—confirming `file_count` counts the whole candidate tree while keeping candidate roots disjoint.
+  2. `scope_stranded` checks `p.resolve().is_relative_to(inp.path)`. If a user explicitly scopes an external file (e.g. from `~/Downloads`) or shares one file across two disjoint inputs (`scope=["in-1", "in-2"]`), `status` will emit a `scope_stranded` warning because a single path cannot sit inside two disjoint folders simultaneously.
+- **Known Limits:**
+  - `file_count` runs `filtered_files` once per candidate (up to 20 walks).
+  - Document discovery runs a second depth-3 walk across the dropped folder.
+  - Folders without markers (e.g. bare script or hardware folders) are not suggested automatically; the Step 3 wizard must always offer a manual "Add folder" option.
+  - `CONVERTIBLE_EXTENSIONS` in `status.py` is a stand-in until `convert.py` / `normalize` owns the single list.
+- **Next:** Collection Step 3 (`active_project` in `core/config.py` + guided `init` wizard and `add`/`remove`/`status` commands in `cli/commands.py`).
