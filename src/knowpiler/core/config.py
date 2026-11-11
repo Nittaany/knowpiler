@@ -39,19 +39,19 @@ ENV_VAR_BY_BACKEND = {
     "ollama": "OLLAMA_BASE_URL",
 }
 
+class Config(BaseModel):
+    backend: Optional[str] = None
+    model: Optional[str] = None
+    active_project: Optional[str] = None   # C11: read by interfaces only
+    storage_root: str = str(KNOWPILER_PROJECTS_HOME)
+    # Unified Layer 1 + Layer 2 corpus -- this is what Level 3/4 will read from.
+    knowledge_root: str = str(KNOWPILER_PROJECTS_HOME / "_knowledge")
+
 # Auto-hydrate process memory with the secure .env file if it exists
 def hydrate_env() -> None:
     """Explicitly loads environment variables. Call once at CLI startup."""
     if ENV_PATH.exists():
         dotenv.load_dotenv(ENV_PATH)
-
-class Config(BaseModel):
-    backend: Optional[str] = None
-    model: Optional[str] = None
-    storage_root: str = str(KNOWPILER_PROJECTS_HOME)
-    # Unified Layer 1 + Layer 2 corpus -- this is what Level 3/4 will read from.
-    knowledge_root: str = str(KNOWPILER_PROJECTS_HOME / "_knowledge")
-
 
 def load_config() -> Config:
     if not CONFIG_PATH.exists():

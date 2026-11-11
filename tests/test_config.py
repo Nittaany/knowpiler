@@ -52,3 +52,14 @@ def test_save_credential_creates_private_env_file(home):
     assert "GEMINI_API_KEY" in env.read_text(encoding="utf-8")
     if cfg.os.name != "nt":
         assert (env.stat().st_mode & 0o777) == 0o600
+
+def test_active_project_round_trips_and_clears(tmp_path, monkeypatch):
+    from knowpiler.core import config as cfg
+    monkeypatch.setattr(cfg, "KNOWPILER_HOME", tmp_path)
+    monkeypatch.setattr(cfg, "CONFIG_PATH", tmp_path / "config.toml")
+
+    assert cfg.load_config().active_project is None
+    cfg.save_config(cfg.Config(active_project="lms"))
+    assert cfg.load_config().active_project == "lms"
+    cfg.save_config(cfg.Config())
+    assert cfg.load_config().active_project is None
