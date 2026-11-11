@@ -754,3 +754,68 @@ zero feature code — only audits, research, and plans.
 **Format from Log 14 onward:** `Date · Slice · Changed · Evidence · Surprise · Decision · Next`.
 **Next:** `0d` `manifest.py` → `0e` `convert.py` → `0f` `llm.py` → `0g` CI → `0h` `commands.py` →
 event protocol → Textual Shell v0 → `normalize`.
+
+## Log 14 — Collection Step 1: Manifest v3, ROLES table, disjoint inputs (2026-11-12)
+
+- **Slice:** Collection Step 1 (`core/manifest.py` v3 + `tests/test_manifest.py`)
+- **Evidence:** `23 passed in 0.10s`. Not yet committed at time of writing.
+- **Changed:**
+  - `SCHEMA_VERSION = 3`: manifest = `inputs[]` + `evidence[]`. Removed `root_dir`, `src_dirs`, the single readme slot, `arch_diagram`, and `conversion_log`/`graphify_log`. Run logs will live under the staging folder once `normalize` exists. Nothing writes them yet.
+  - Data-driven `ROLES` table (`RoleSpec`, with a generated `.hint`), replacing `ALLOWED_EXTENSIONS` and `REPORT_TYPES`.
+  - `add_input`, `add_evidence`, `remove_entry` return structured `Result`/`Problem`, never raise on user error, never print.
+  - Disjoint inputs: same folder is a no-op, parent→child offers `replace_existing`, child→parent is rejected. `replace_id` checks that the new path sits inside the replaced input and does not overlap any other input.
+  - Evidence: streamed 1 MB sha256 + size, `OSError` becomes an `unreadable` problem, auto-scope from the containing input, whole-project `scope=[]` is never narrowed on re-add.
+  - `remove_entry(cascade=)` blocks removing an input whose evidence is scoped only to it, so scope never silently widens.
+  - Atomic save (`os.replace`), and `load` wraps bad JSON/schema in `ManifestError`.
+- **Surprise:**
+  1. Live v2 `init`: a yes/no prompt swallowed a dragged path (`No/Users/...`), the "report" was actually the knowpiler roadmap, and the `LMS-pankaj` parent plus a child were both accepted as source roots.
+  2. Re-adding a `scope=[]` file with `["in-1"]` silently narrowed it to one input.
+  3. Reply summaries repeatedly mis-stated test counts. Trust the pytest output only.
+
+### Decisions locked (semantics)
+
+**Project and manifest**
+
+- **D1** A project is one user-declared portfolio story. Knowpiler never splits or merges projects. Discovery may warn that roots look unrelated.
+- **D2** The manifest holds only what the user declared. Components, classification, relationships, claims live in discovery output files, never in the manifest.
+
+**Collection rules**
+
+- **C1** Suggestions are lookups against a plain-data rule table. Observation wording ("found package.json"), opt-in, never auto-written to the manifest. No file contents read, no LLM.
+- **C2** `kind` (inputs) and `role` (evidence) are open strings with suggested values, so hardware/research projects aren't second-class.
+- **C3** One evidence entry per resolved path (`Path.resolve()`), with `scope` as a list of input ids. Empty scope = whole project. Same path + same scope = no-op. New scope = extend. A whole-project entry never narrows.
+- **C4** `init` is minimal: guided wizard for beginners, plus direct `add input` / `add evidence` / `remove` / `status` commands for scripts and power users. Both are thin interfaces over the same core.
+- **C5** Collection infers no boundaries, relationships, or classification.
+- **C6** Zero inputs and zero evidence is valid (research-only and hardware-only projects).
+- **C7** Collection validates only what was declared (exists, readable, allowed type, not a duplicate). Readiness for `normalize` is a separate check, shown by `status` and enforced at `normalize`.
+
+**Architecture**
+
+- **C8** Core is interface-neutral and returns `Result`/`Problem`. CLI wizard, flags, TUI, web, and MCP all translate the same objects.
+- **C9** The wizard collects into an in-memory draft and saves once at "Save & finish". Ctrl-C asks save or discard. Overwriting an existing project is confirm-gated.
+- **C10** The `ROLES` table (role, label, extensions, subtypes, hint) is the single source for validator, prompts, and menus, so they cannot drift.
+- **C11** `active_project` is resolved in interfaces only (with `-p` override). Core always takes an explicit project. _Not implemented yet._
+- **C12** Wrong file type: core returns `wrong_type` with fixes `retry` / `save_as_other` / `skip`. The interface offers them. Role `other` (or a custom role) accepts any extension.
+
+**Inputs**
+
+- **C13** Every code input is its own codebase root. There is no `root_dir`. Inputs must be disjoint, checked at add time.
+- **C14** Dropping a marker-less container whose children have markers triggers a split _suggestion_ (use the children / keep as one / pick). The user confirms and nothing splits silently.
+- **C15** `.graphifyignore` and graphify run once per input root, never on a container (per Log 8 findings). The planned experiment was dropped. `normalize` must tell the user it writes a file into their repo.
+
+### Agreed for the next step, not yet built
+
+- **S1** Pre-check a suggested candidate only if its name matches the project-name tokens (whole-token match on slugified names, not substrings).
+- **S2** More than ~6 unmatched candidates → "workspace with many codebases" message, no pre-check, manual pick. Cap the list near 20 and report the overflow.
+- Suggestions descend no further once a folder is a candidate (keeps disjointness). A README is suggested only at a candidate's root. Document discovery needs its own pass, because `STATIC_SAFETY_NET` ignores `*.pdf`.
+
+### Known limits / follow-ups
+
+- `_next_id` reuses the highest removed id. Harmless until discovery files reference ids.
+- Replacing an input can strand evidence scoped to it. `status` should warn.
+- Same file re-added under a different role is a silent no-op.
+- Role strings outside the table pass silently, so `status` should list them.
+- `normalize` must exclude the staging dir if it lands inside an input.
+- `commands.py` still imports the removed `create_manifest`, so the CLI is broken until Step 3.
+
+- **Next:** Step 2: `core/discover.py` (suggest) and `core/status.py` (readiness, hash drift, the warnings above), with tests, one file at a time.
