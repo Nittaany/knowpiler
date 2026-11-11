@@ -103,6 +103,25 @@ def test_disjoint_inputs_parent_then_child_offers_replace(tmp_path: Path) -> Non
     assert [i.label for i in m.inputs] == ["frontend", "backend"]
 
 
+def test_replace_id_rejects_overlap_with_another_input(tmp_path: Path) -> None:
+    parent = tmp_path / "LMS-pankaj"
+    backend = parent / "backend"
+    backend_sub = backend / "api"
+    backend_sub.mkdir(parents=True)
+
+    m = mf.init_manifest("lms", str(tmp_path / "store"))
+    m.inputs = [
+        mf.InputEntry(id="in-1", path=str(parent.resolve()), kind="code", label="LMS-pankaj"),
+        mf.InputEntry(id="in-2", path=str(backend.resolve()), kind="code", label="backend"),
+    ]
+
+    # backend_sub is inside in-1 (target), but overlaps in-2 (other existing input)
+    res = mf.add_input(m, backend_sub, replace_id="in-1")
+    assert not res.ok
+    assert res.problems[0].code == "child_of_existing_input"
+    assert res.problems[0].conflicting_id == "in-2"
+
+
 def test_disjoint_inputs_child_then_parent_is_rejected(tmp_path: Path) -> None:
     parent = tmp_path / "LMS-pankaj"
     frontend = parent / "frontend"
@@ -169,6 +188,24 @@ def test_duplicate_evidence_same_scope_noop_and_new_scope_extends(tmp_path: Path
     r3 = mf.add_evidence(m, shared_doc, role="report", scope=["in-2"])
     assert r3.ok and r3.status == "scope_extended"
     assert m.evidence[0].scope == ["in-1", "in-2"]
+
+
+def test_whole_project_evidence_is_not_narrowed_on_re_add(tmp_path: Path) -> None:
+    fe = tmp_path / "frontend"
+    fe.mkdir()
+    report = tmp_path / "report.pdf"
+    report.write_bytes(b"%PDF-1.4 whole project")
+
+    m = mf.init_manifest("lms", str(tmp_path / "store"))
+    mf.add_input(m, fe)  # in-1
+
+    r1 = mf.add_evidence(m, report, role="report", scope=[])
+    assert r1.ok and r1.entry.scope == []
+
+    # Re-adding with a specific scope must NOT narrow whole-project scope=[]
+    r2 = mf.add_evidence(m, report, role="report", scope=["in-1"])
+    assert r2.ok and r2.status == "already_collected"
+    assert m.evidence[0].scope == []
 
 
 def test_wrong_extension_returns_save_as_other_fix(tmp_path: Path) -> None:

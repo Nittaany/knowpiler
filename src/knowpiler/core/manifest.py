@@ -489,6 +489,8 @@ def add_evidence(
     # Duplicate check by resolved path (C3): same scope = no-op, new scope = extend scope
     for existing in manifest.evidence:
         if Path(existing.path).resolve() == resolved:
+            if not existing.scope:  # already whole-project; nothing to extend
+                return Result(ok=True, status="already_collected", entry=existing)
             new_scopes = [sid for sid in resolved_scope if sid not in existing.scope]
             if not new_scopes:
                 return Result(ok=True, status="already_collected", entry=existing)
